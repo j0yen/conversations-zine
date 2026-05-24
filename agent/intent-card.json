@@ -1,0 +1,105 @@
+{
+  "schema": "autobuilder.intent_card.v1",
+  "prd_source": "/home/jsy/projects/autobuilder/PRD-conversations-zine.md",
+  "intent_slug": "conversations-zine",
+  "root_motivation": "The quarterly zine's bottleneck is the moment-extractor step — without a CLI that walks session JSONLs and surfaces ~50 ranked candidate excerpts, the editor (jsy) has to read every transcript by hand to find moments worth printing. Phase 0 ships only the extractor; layout/print/mail are explicitly downstream and human-driven.",
+  "user_persona": "jsy at quarter-end, running the extractor against the last 90 days of Claude Code session JSONLs (~/.claude/projects/-home-jsy/*.jsonl), reading the ranked candidates in terminal, and using the JSON to seed manual selection. Audience for the JSON: jsy reading it before manual curation, no downstream automation in Phase 0.",
+  "unfakeable_metric": {
+    "name": "acceptance_tests_passing",
+    "lower_is_better": false,
+    "harness_command": "cargo test --tests 2>&1 | grep -E 'test result: ok' | wc -l",
+    "target": null
+  },
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "level": "MUST",
+      "description": "`zine extract --since <duration> [--root <jsonl-dir>] [--limit <N>] [--format json|text]` walks all *.jsonl files modified within the duration (e.g. 90d, 30d), extracts conversation turns, scores each turn pair (user + assistant) with the interest heuristic, and prints the top N (default 50) as JSON (default) or human-readable text.",
+      "test": "tests/acceptance_ac1.rs"
+    },
+    {
+      "id": "AC2",
+      "level": "MUST",
+      "description": "JSON output shape: top-level `{since, generated_at, root, total_turns_scanned, returned, moments: [...]}`. Each moment: `{session_id, turn_index, ts, user_text, assistant_text, score, why}`. `why` is a one-sentence string explaining the score signals that fired.",
+      "test": "tests/acceptance_ac2.rs"
+    },
+    {
+      "id": "AC3",
+      "level": "MUST",
+      "description": "Interest heuristic is a weighted sum: (a) length bell curve peaking ~600 chars total, (b) user-redirect keywords in turn N+1 (`wait`, `no actually`, `stop`, `hmm`) — indicates surprise, (c) code blocks in the assistant text (positive weight), (d) novelty score: ratio of words new to this session. Each component's contribution appears in the `why` string.",
+      "test": "tests/acceptance_ac3.rs"
+    },
+    {
+      "id": "AC4",
+      "level": "MUST",
+      "description": "Default --root is `~/.claude/projects/-home-jsy/` (the Claude Code project transcripts directory). Non-existent root → exit 2 with stderr containing the path and `no jsonl files found`.",
+      "test": "tests/acceptance_ac4.rs"
+    },
+    {
+      "id": "AC5",
+      "level": "MUST",
+      "description": "Turn pairs are extracted from the JSONL by walking records and pairing a `user` role record with the next `assistant` role record. Records that don't fit the pair (system reminders, tool calls in isolation) are skipped, not paired.",
+      "test": "tests/acceptance_ac5.rs"
+    },
+    {
+      "id": "AC6",
+      "level": "MUST",
+      "description": "`--exclude-tool-only` (default true) drops assistant turns whose text content is empty (tool-only invocations). `--include-tool-only` includes them.",
+      "test": "tests/acceptance_ac6.rs"
+    },
+    {
+      "id": "AC7",
+      "level": "SHOULD",
+      "description": "`--format text` prints each moment as: a horizontal rule, the session_id/turn_index/timestamp/score header, blockquoted user_text, blank line, assistant_text, blank line, `(why: <reason>)` italicised. Easy to skim in less.",
+      "test": "tests/acceptance_ac7.rs"
+    },
+    {
+      "id": "AC8",
+      "level": "MAY",
+      "description": "`--errors-only` filter selects only turn pairs where the assistant's NEXT turn (N+2) contains apology keywords (`sorry`, `my mistake`, `you're right`). Mirrors the zine's mandatory `Errors and Apologies` section.",
+      "test": "tests/acceptance_ac8.rs"
+    }
+  ],
+  "scope": [
+    "Walk JSONL files under a root directory (default ~/.claude/projects/-home-jsy/)",
+    "Filter by recency window (--since 90d)",
+    "Pair user/assistant turns",
+    "Score each pair with weighted-sum interest heuristic (length + redirect-detection + code-density + novelty)",
+    "Rank descending, return top N",
+    "Output JSON or human-readable text"
+  ],
+  "non_goals": [
+    "PDF, Risograph, layout, print",
+    "Mailing list management",
+    "Anonymization of third parties (editor's manual responsibility)",
+    "Cross-session correlation / theme clustering",
+    "LLM-based reranking (heuristic only; no model calls)",
+    "Real-time monitoring of in-progress sessions",
+    "Public/network distribution"
+  ],
+  "hard_constraints": {
+    "rust_edition": "2024",
+    "target_kind": "cli",
+    "deny_unsafe": true,
+    "max_deps": 12,
+    "msrv": "1.85"
+  },
+  "five_whys_trace": [
+    {
+      "why": 1,
+      "q": "Why ship the extractor before layout/print integration?",
+      "a": "Because the heuristic is the only part that's automatable AND that needs taste-iteration — and you can't iterate the heuristic without running it against real transcripts and reading the outputs. Layout/print are taste-laden but manual; they don't benefit from being scripted in Phase 0."
+    },
+    {
+      "why": 2,
+      "q": "Why a heuristic rather than asking the LLM what's interesting?",
+      "a": "Because the heuristic runs across hundreds of MB of transcripts cheaply and reproducibly, and the editor still picks the final ~12 manually. An LLM rerank would be slow + expensive + non-reproducible — wrong tool for the surfacing stage."
+    },
+    {
+      "why": 3,
+      "q": "Why include `why` (signal attribution) in the output?",
+      "a": "Because the heuristic will be wrong sometimes — and when the editor disagrees with the score, they need to know WHICH signal caused it so they can mentally discount it (or file a bug for the weight tuning)."
+    }
+  ],
+  "created_at": "2026-05-24T04:55:00Z"
+}
