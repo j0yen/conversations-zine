@@ -13,10 +13,77 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
 #[test]
 fn acceptance_ac2() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC2 not yet implemented — see file header");
+    let root = TempDir::new().unwrap();
+    let lines = [
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "hello"},
+            "timestamp": "2026-04-01T00:00:00Z",
+        }),
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type":"text","text":"hi back"}]},
+            "timestamp": "2026-04-01T00:00:01Z",
+        }),
+    ];
+    let mut s = String::new();
+    for l in &lines {
+        s.push_str(&serde_json::to_string(l).unwrap());
+        s.push('\n');
+    }
+    std::fs::write(root.path().join("s.jsonl"), s).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_zine");
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    // Top-level keys.
+    for k in [
+        "since",
+        "generated_at",
+        "root",
+        "total_turns_scanned",
+        "returned",
+        "moments",
+    ] {
+        assert!(v.get(k).is_some(), "missing top-level key: {k}");
+    }
+    assert_eq!(v["since"], "90d");
+    assert!(v["total_turns_scanned"].as_u64().unwrap() >= 1);
+    assert_eq!(
+        v["returned"].as_u64().unwrap(),
+        v["moments"].as_array().unwrap().len() as u64
+    );
+
+    let m = &v["moments"][0];
+    for k in [
+        "session_id",
+        "turn_index",
+        "ts",
+        "user_text",
+        "assistant_text",
+        "score",
+        "why",
+    ] {
+        assert!(m.get(k).is_some(), "missing moment key: {k}");
+    }
+    assert_eq!(m["session_id"], "s");
+    assert!(m["score"].is_number());
+    let why = m["why"].as_str().unwrap();
+    assert!(!why.is_empty());
+    assert!(
+        why.contains("length") || why.contains("redirect") || why.contains("code") || why.contains("novelty"),
+        "why should explain signals; got: {why}"
+    );
 }

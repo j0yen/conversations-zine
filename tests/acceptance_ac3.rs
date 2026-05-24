@@ -13,10 +13,153 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
+fn user_msg(text: &str, ts: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "timestamp": ts,
+    })
+}
+fn asst_msg(text: &str, ts: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type":"text","text":text}]},
+        "timestamp": ts,
+    })
+}
+
+fn write_session(dir: &std::path::Path, name: &str, recs: &[serde_json::Value]) {
+    let mut s = String::new();
+    for r in recs {
+        s.push_str(&serde_json::to_string(r).unwrap());
+        s.push('\n');
+    }
+    std::fs::write(dir.join(name), s).unwrap();
+}
+
+fn run(root: &std::path::Path) -> serde_json::Value {
+    let bin = env!("CARGO_BIN_EXE_zine");
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root)
+        .args(["--limit", "100"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
 #[test]
 fn acceptance_ac3() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC3 not yet implemented — see file header");
+    // Three sessions, each isolating one signal vs a baseline.
+    //
+    // (a) length bell curve: a ~600-char pair should outscore a 50-char pair.
+    let dir_len = TempDir::new().unwrap();
+    let mid = "x ".repeat(150); // ~300 user + ~300 assistant ≈ 600 total
+    let long_user = mid.clone();
+    let long_asst = "y ".repeat(150);
+    write_session(
+        dir_len.path(),
+        "len.jsonl",
+        &[
+            user_msg("hi", "2026-04-01T00:00:00Z"),
+            asst_msg("ok", "2026-04-01T00:00:01Z"),
+            user_msg(&long_user, "2026-04-01T00:01:00Z"),
+            asst_msg(&long_asst, "2026-04-01T00:01:01Z"),
+        ],
+    );
+    let v = run(dir_len.path());
+    let moments = v["moments"].as_array().unwrap();
+    assert_eq!(moments.len(), 2);
+    let scores: Vec<f64> = moments.iter().map(|m| m["score"].as_f64().unwrap()).collect();
+    // The longer (closer-to-600) pair should outscore the tiny one.
+    assert!(scores[0] >= scores[1]);
+    // Find which pair has the bigger total length; it should be ranked first.
+    let first_text_len = moments[0]["user_text"].as_str().unwrap().len()
+        + moments[0]["assistant_text"].as_str().unwrap().len();
+    assert!(first_text_len > 100, "first moment text len: {first_text_len}");
+    // Every moment why-string contains all four signal labels.
+    for m in moments {
+        let w = m["why"].as_str().unwrap();
+        for label in ["length", "redirect", "code", "novelty"] {
+            assert!(w.contains(label), "why missing label {label}: {w}");
+        }
+    }
+
+    // (b) redirect: the pair whose NEXT user turn says "wait" should beat
+    // a similar pair whose next turn is calm.
+    let dir_red = TempDir::new().unwrap();
+    write_session(
+        dir_red.path(),
+        "red.jsonl",
+        &[
+            user_msg("alpha aaa", "2026-04-01T00:00:00Z"),
+            asst_msg("beta bbb", "2026-04-01T00:00:01Z"),
+            user_msg("wait that's wrong", "2026-04-01T00:00:02Z"),
+            asst_msg("ok fixing it", "2026-04-01T00:00:03Z"),
+            user_msg("thanks", "2026-04-01T00:00:04Z"),
+            asst_msg("welcome", "2026-04-01T00:00:05Z"),
+        ],
+    );
+    let v = run(dir_red.path());
+    let moments = v["moments"].as_array().unwrap();
+    // Find the moment whose user_text is "alpha aaa" — its next user is "wait that's wrong" → redirect.
+    let alpha = moments
+        .iter()
+        .find(|m| m["user_text"] == "alpha aaa")
+        .unwrap();
+    assert!(
+        alpha["why"]
+            .as_str()
+            .unwrap()
+            .contains("redirect=3."),
+        "redirect signal should fire; why={}",
+        alpha["why"]
+    );
+
+    // (c) code blocks: a pair with fenced code should score higher on
+    // the code component than one without.
+    let dir_code = TempDir::new().unwrap();
+    write_session(
+        dir_code.path(),
+        "code.jsonl",
+        &[
+            user_msg("plain text question", "2026-04-01T00:00:00Z"),
+            asst_msg("plain answer no code", "2026-04-01T00:00:01Z"),
+            user_msg("code question", "2026-04-01T00:01:00Z"),
+            asst_msg(
+                "answer\n```rust\nfn x() -> i32 { 1 }\n```\nthat's it",
+                "2026-04-01T00:01:01Z",
+            ),
+        ],
+    );
+    let v = run(dir_code.path());
+    let moments = v["moments"].as_array().unwrap();
+    let code_m = moments
+        .iter()
+        .find(|m| m["user_text"] == "code question")
+        .unwrap();
+    let plain_m = moments
+        .iter()
+        .find(|m| m["user_text"] == "plain text question")
+        .unwrap();
+    // Code moment has a non-zero code contribution; plain has zero.
+    let code_why = code_m["why"].as_str().unwrap();
+    let plain_why = plain_m["why"].as_str().unwrap();
+    assert!(
+        code_why.contains("code=1.5") || code_why.contains("code=3.0"),
+        "code fence should boost; why={code_why}"
+    );
+    assert!(
+        plain_why.contains("code=0.00"),
+        "plain has no fence; why={plain_why}"
+    );
 }

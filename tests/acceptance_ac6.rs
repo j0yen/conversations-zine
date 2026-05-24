@@ -13,10 +13,91 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
 #[test]
 fn acceptance_ac6() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC6 not yet implemented — see file header");
+    let root = TempDir::new().unwrap();
+    let recs = vec![
+        // tool-only assistant: content is only a tool_use block
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "do thing"},
+            "timestamp": "2026-05-01T00:00:00Z",
+        }),
+        serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type":"tool_use","id":"x","name":"Bash","input":{"command":"ls"}}]
+            },
+            "timestamp": "2026-05-01T00:00:01Z",
+        }),
+        // real text turn for contrast
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "explain"},
+            "timestamp": "2026-05-01T00:01:00Z",
+        }),
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type":"text","text":"answer text"}]},
+            "timestamp": "2026-05-01T00:01:01Z",
+        }),
+    ];
+    let mut s = String::new();
+    for r in &recs {
+        s.push_str(&serde_json::to_string(r).unwrap());
+        s.push('\n');
+    }
+    std::fs::write(root.path().join("s.jsonl"), s).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_zine");
+
+    // Default: tool-only excluded → 1 moment.
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "100"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let moments = v["moments"].as_array().unwrap();
+    assert_eq!(
+        moments.len(),
+        1,
+        "default should drop tool-only assistant; got {moments:?}"
+    );
+    assert_eq!(moments[0]["assistant_text"], "answer text");
+
+    // --include-tool-only: both moments present.
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "100", "--include-tool-only"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let moments = v["moments"].as_array().unwrap();
+    assert_eq!(moments.len(), 2, "--include-tool-only should include both");
+    let user_texts: Vec<&str> = moments
+        .iter()
+        .map(|m| m["user_text"].as_str().unwrap())
+        .collect();
+    assert!(user_texts.contains(&"do thing"));
+    assert!(user_texts.contains(&"explain"));
+
+    // --exclude-tool-only explicit: same as default.
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "100", "--exclude-tool-only"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["moments"].as_array().unwrap().len(), 1);
 }

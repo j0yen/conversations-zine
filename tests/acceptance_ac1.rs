@@ -13,10 +13,86 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
+fn write_jsonl(dir: &std::path::Path, name: &str, lines: &[serde_json::Value]) {
+    let mut s = String::new();
+    for l in lines {
+        s.push_str(&serde_json::to_string(l).unwrap());
+        s.push('\n');
+    }
+    std::fs::write(dir.join(name), s).unwrap();
+}
+
+fn user(text: &str, ts: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "timestamp": ts,
+    })
+}
+
+fn assistant(text: &str, ts: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+        },
+        "timestamp": ts,
+    })
+}
+
 #[test]
 fn acceptance_ac1() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC1 not yet implemented — see file header");
+    let root = TempDir::new().unwrap();
+    write_jsonl(
+        root.path(),
+        "session-a.jsonl",
+        &[
+            user("explain rust ownership", "2026-05-01T00:00:00Z"),
+            assistant(
+                "Ownership in Rust means each value has a single owner; when the owner goes out of scope the value is dropped.",
+                "2026-05-01T00:00:01Z",
+            ),
+            user("what about borrowing", "2026-05-01T00:00:02Z"),
+            assistant(
+                "Borrowing lets you reference a value without taking ownership. Use &T for shared and &mut T for exclusive.",
+                "2026-05-01T00:00:03Z",
+            ),
+        ],
+    );
+
+    let bin = env!("CARGO_BIN_EXE_zine");
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "10"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "exit code\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let moments = parsed["moments"].as_array().unwrap();
+    assert!(!moments.is_empty(), "expected at least 1 moment");
+    assert!(moments.len() <= 10);
+
+    // --format text should also work and produce non-JSON output.
+    let out_text = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "10", "--format", "text"])
+        .output()
+        .unwrap();
+    assert_eq!(out_text.status.code(), Some(0));
+    let text = String::from_utf8(out_text.stdout).unwrap();
+    assert!(text.contains("session-a"));
+    assert!(serde_json::from_str::<serde_json::Value>(&text).is_err());
 }

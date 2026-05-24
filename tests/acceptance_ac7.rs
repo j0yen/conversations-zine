@@ -13,10 +13,58 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
 #[test]
 fn acceptance_ac7() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC7 not yet implemented — see file header");
+    let root = TempDir::new().unwrap();
+    let recs = [
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "ping question"},
+            "timestamp": "2026-05-01T00:00:00Z",
+        }),
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type":"text","text":"pong reply"}]},
+            "timestamp": "2026-05-01T00:00:01Z",
+        }),
+    ];
+    let mut s = String::new();
+    for r in &recs {
+        s.push_str(&serde_json::to_string(r).unwrap());
+        s.push('\n');
+    }
+    std::fs::write(root.path().join("t.jsonl"), s).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_zine");
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "5", "--format", "text"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+
+    // Horizontal rule (a run of dashes).
+    assert!(text.contains("----"), "expected horizontal rule of dashes");
+    // Header with session_id, turn_index, timestamp, score.
+    assert!(text.contains("t"), "expected session id in header");
+    assert!(text.contains("turn 0"), "expected turn index in header");
+    assert!(text.contains("2026-05-01T00:00:00Z"), "expected timestamp");
+    assert!(text.contains("score "), "expected score label");
+    // Blockquoted user text: a line starting with "> ".
+    assert!(
+        text.lines().any(|l| l.starts_with("> ")),
+        "expected blockquoted user_text"
+    );
+    // Assistant text appears.
+    assert!(text.contains("pong reply"), "expected assistant text body");
+    // why line italicised with markdown asterisks and prefix "(why:".
+    assert!(
+        text.contains("*(why: "),
+        "expected italicised (why: ...) line; got:\n{text}"
+    );
 }

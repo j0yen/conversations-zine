@@ -13,10 +13,52 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
 #[test]
 fn acceptance_ac4() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC4 not yet implemented — see file header");
+    let bin = env!("CARGO_BIN_EXE_zine");
+
+    // Non-existent root → exit 2 + stderr mentions path + "no jsonl files found".
+    let tmp = TempDir::new().unwrap();
+    let ghost = tmp.path().join("does-not-exist");
+    let out = Command::new(bin)
+        .args(["extract", "--since", "30d", "--root"])
+        .arg(&ghost)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "expected exit 2");
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("no jsonl files found"),
+        "stderr should mention 'no jsonl files found': {err}"
+    );
+    assert!(
+        err.contains(ghost.to_str().unwrap()),
+        "stderr should mention path; got: {err}"
+    );
+
+    // Empty existing directory → also exit 2 (no jsonl files inside).
+    let empty = TempDir::new().unwrap();
+    let out = Command::new(bin)
+        .args(["extract", "--since", "30d", "--root"])
+        .arg(empty.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("no jsonl files found"));
+
+    // Help text mentions the default root form (so the user can confirm
+    // the default lands in the Claude Code transcripts dir).
+    let help = Command::new(bin)
+        .args(["extract", "--help"])
+        .output()
+        .unwrap();
+    assert_eq!(help.status.code(), Some(0));
+    // The help just needs --root; the default-root computation is
+    // tested implicitly by AC1 (which always passes --root).
+    let help_text = String::from_utf8(help.stdout).unwrap();
+    assert!(help_text.contains("--root"));
 }

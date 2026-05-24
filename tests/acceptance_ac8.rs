@@ -13,10 +13,73 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
+fn user_msg(text: &str, ts: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "timestamp": ts,
+    })
+}
+fn asst_msg(text: &str, ts: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type":"text","text":text}]},
+        "timestamp": ts,
+    })
+}
+
 #[test]
 fn acceptance_ac8() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC8 not yet implemented — see file header");
+    let root = TempDir::new().unwrap();
+    let recs = vec![
+        // Pair 0: assistant gives a confident answer
+        user_msg("how do I do X?", "2026-05-01T00:00:00Z"),
+        asst_msg("you do it like this: X is foo", "2026-05-01T00:00:01Z"),
+        // Pair 1: user pushes back
+        user_msg("that's not right", "2026-05-01T00:00:02Z"),
+        // Pair 1's assistant apologises → makes pair 0 an "error" candidate
+        asst_msg("sorry, you're right, X is bar", "2026-05-01T00:00:03Z"),
+        // Pair 2: unrelated, no apology
+        user_msg("ok thanks", "2026-05-01T00:00:04Z"),
+        asst_msg("happy to help", "2026-05-01T00:00:05Z"),
+    ];
+    let mut s = String::new();
+    for r in &recs {
+        s.push_str(&serde_json::to_string(r).unwrap());
+        s.push('\n');
+    }
+    std::fs::write(root.path().join("s.jsonl"), s).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_zine");
+
+    // Without --errors-only: 3 pairs.
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "100"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["moments"].as_array().unwrap().len(), 3);
+
+    // With --errors-only: only pair 0 survives (its next assistant apologises).
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "100", "--errors-only"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let moments = v["moments"].as_array().unwrap();
+    assert_eq!(
+        moments.len(),
+        1,
+        "errors-only should keep just the 1 pair whose next assistant apologises; got: {moments:?}"
+    );
+    assert_eq!(moments[0]["user_text"], "how do I do X?");
 }

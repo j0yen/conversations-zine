@@ -13,10 +13,94 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 
+use std::process::Command;
+use tempfile::TempDir;
+
 #[test]
 fn acceptance_ac5() {
-    // edit-agent: replace this stub with a real assertion. The
-    // panic keeps the test failing until you do, so the loop
-    // sees a real Stage 3 signal.
-    panic!("AC AC5 not yet implemented — see file header");
+    let root = TempDir::new().unwrap();
+    let recs = vec![
+        // permission-mode: not a user/assistant — skip
+        serde_json::json!({"type": "permission-mode", "permissionMode": "auto"}),
+        // attachment: not user/assistant — skip
+        serde_json::json!({"type": "attachment", "attachment": {"type": "x"}}),
+        // user turn
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "first question"},
+            "timestamp": "2026-05-01T00:00:00Z",
+        }),
+        // tool_use-only assistant (no text block) — this is the assistant
+        // pairing target, but its text body is empty so AC6 would later drop
+        // it. For AC5 we just need to see it as a paired assistant turn.
+        // Use a text block so AC5 isolates pairing logic from AC6's filter.
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type":"text","text":"first answer"}]},
+            "timestamp": "2026-05-01T00:00:01Z",
+        }),
+        // tool_result wrapped as user — must NOT count as a real user turn
+        serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]
+            },
+            "timestamp": "2026-05-01T00:00:02Z",
+        }),
+        // second real user turn
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "second question"},
+            "timestamp": "2026-05-01T00:00:03Z",
+        }),
+        // second real assistant
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type":"text","text":"second answer"}]},
+            "timestamp": "2026-05-01T00:00:04Z",
+        }),
+        // dangling user (no following assistant) — should NOT produce a pair
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "orphan"},
+            "timestamp": "2026-05-01T00:00:05Z",
+        }),
+    ];
+    let mut s = String::new();
+    for r in &recs {
+        s.push_str(&serde_json::to_string(r).unwrap());
+        s.push('\n');
+    }
+    std::fs::write(root.path().join("s.jsonl"), s).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_zine");
+    let out = Command::new(bin)
+        .args(["extract", "--since", "90d", "--root"])
+        .arg(root.path())
+        .args(["--limit", "100"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let moments = v["moments"].as_array().unwrap();
+    let total = v["total_turns_scanned"].as_u64().unwrap();
+
+    // Exactly 2 real pairs (orphan + tool_result-wrapped-user are skipped).
+    assert_eq!(total, 2, "expected 2 paired turns; got {total}");
+    assert_eq!(moments.len(), 2);
+
+    let texts: Vec<&str> = moments
+        .iter()
+        .map(|m| m["user_text"].as_str().unwrap())
+        .collect();
+    assert!(texts.contains(&"first question"));
+    assert!(texts.contains(&"second question"));
+    assert!(!texts.contains(&"orphan"));
 }
