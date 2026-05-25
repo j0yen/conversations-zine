@@ -2,6 +2,24 @@
 
 > The quarterly zine's bottleneck is the moment-extractor step — without a CLI that walks session JSONLs and surfaces ~50 ranked candidate excerpts, the editor (the author) has to read every transcript by hand to find moments worth printing.
 
+## Install
+
+### One-liner
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/j0yen/conversations-zine/main/install.sh | bash
+```
+
+### Manual
+
+```sh
+git clone --depth 1 https://github.com/j0yen/conversations-zine.git
+cd conversations-zine
+./install.sh
+```
+
+Installs the `zine` binary via `cargo install --path . --locked`. Requires `cargo` / `rustc 1.85+` and `git`. Built binary lands in `~/.cargo/bin/`.
+
 ## Why
 
 The quarterly zine's bottleneck is the moment-extractor step — without a CLI that walks session JSONLs and surfaces ~50 ranked candidate excerpts, the editor (the author) has to read every transcript by hand to find moments worth printing. Phase 0 ships only the extractor; layout/print/mail are explicitly downstream and human-driven.
