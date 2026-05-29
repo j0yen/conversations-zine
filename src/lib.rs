@@ -3,8 +3,17 @@
 //! Walks `*.jsonl` files in a Claude Code project directory, pairs user/assistant
 //! turns, scores each pair with a weighted interest heuristic, and surfaces
 //! the top-N ranked moments as JSON or skimmable text.
+//!
+//! ## Cadence intake (v0.2)
+//!
+//! Pass `--cadence-monthly` to also pull the quarter's monthly cadence records
+//! (produced by `letter-curate`) as pre-curated moment seeds, merged into the
+//! same moment pool as the JSONL walk.  Use `--cadence-record` to register the
+//! zine output as a `quarterly` cadence record.
 
 #![cfg_attr(not(test), forbid(unsafe_code))]
+
+pub mod cadence_intake;
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -60,6 +69,8 @@ pub struct ExtractConfig {
     pub errors_only: bool,
     /// Output format.
     pub format: Format,
+    /// When `Some`, also pull cadence monthly records as moment seeds.
+    pub cadence: Option<cadence_intake::CadenceIntakeConfig>,
 }
 
 /// A single ranked moment.
@@ -94,6 +105,12 @@ pub struct ExtractReport {
     pub total_turns_scanned: usize,
     /// Number of moments returned (≤ `limit`).
     pub returned: usize,
+    /// Number of moments that originated from cadence monthly records.
+    pub moments_from_cadence: usize,
+    /// Number of moments that originated from JSONL walk.
+    pub moments_from_jsonl: usize,
+    /// ULID/IDs of monthly cadence records that were consumed (empty if none).
+    pub cadence_source_ids: Vec<String>,
     /// Ranked moments (descending by score).
     pub moments: Vec<Moment>,
 }
@@ -448,6 +465,9 @@ fn process_session(
 
 /// Walk the configured root, score every turn pair, return the top-N.
 ///
+/// When `cfg.cadence` is `Some`, also pulls monthly cadence records as
+/// additional moment seeds (graceful no-op if substrate is empty).
+///
 /// # Errors
 /// - [`ZineError::NoJsonlFiles`] when the root is missing OR contains
 ///   no `*.jsonl` files modified within `since`.
@@ -480,6 +500,21 @@ pub fn extract(cfg: &ExtractConfig) -> Result<ExtractReport, ZineError> {
         process_session(&session_id, &pairs, cfg, &mut all_moments);
     }
 
+    let jsonl_moment_count = all_moments.len();
+
+    // Cadence intake — merge monthly record moments into the pool (opt-in).
+    let mut cadence_source_ids: Vec<String> = Vec::new();
+    let cadence_moment_count;
+    if let Some(cad_cfg) = &cfg.cadence {
+        // Errors from cadence intake are non-fatal: degrade gracefully.
+        let intake = cadence_intake::ingest(cad_cfg).unwrap_or_default();
+        cadence_moment_count = intake.moments.len();
+        cadence_source_ids = intake.source_ids;
+        all_moments.extend(intake.moments);
+    } else {
+        cadence_moment_count = 0;
+    }
+
     all_moments.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -495,6 +530,9 @@ pub fn extract(cfg: &ExtractConfig) -> Result<ExtractReport, ZineError> {
         root: cfg.root.display().to_string(),
         total_turns_scanned: total_scanned,
         returned,
+        moments_from_jsonl: jsonl_moment_count.min(returned),
+        moments_from_cadence: cadence_moment_count.min(returned),
+        cadence_source_ids,
         moments: all_moments,
     })
 }

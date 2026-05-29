@@ -1,6 +1,6 @@
 [package]
 name = "conversations-zine"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -63,6 +63,7 @@ serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 walkdir = "2"
 thiserror = "1"
+pulldown-cmark = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 proptest = "1"
