@@ -1,69 +1,76 @@
 # conversations-zine
 
-> The quarterly zine's bottleneck is the moment-extractor step — without a CLI that walks session JSONLs and surfaces ~50 ranked candidate excerpts, the editor (the author) has to read every transcript by hand to find moments worth printing.
+Walks a quarter of Claude Code session transcripts and surfaces the ~50 most interesting moments, ranked, so the editor reads candidates instead of every transcript by hand.
+
+## Why it exists
+
+The quarterly zine has one bottleneck: finding the moments worth printing. Without a tool to read them, the editor — the author — has to re-read 90 days of session JSONLs by hand. `zine extract` does the reading: it walks the transcripts, scores each user/assistant turn pair on an interest heuristic, and emits the top candidates as JSON to seed manual selection. Phase 0 ships only the extractor. Layout, print, and mail are downstream and human-driven by design.
 
 ## Install
 
-### One-liner
-
 ```sh
+# One-liner
 curl -fsSL https://raw.githubusercontent.com/j0yen/conversations-zine/main/install.sh | bash
-```
 
-### Manual
-
-```sh
+# Or from a clone
 git clone --depth 1 https://github.com/j0yen/conversations-zine.git
-cd conversations-zine
-./install.sh
+cd conversations-zine && ./install.sh
 ```
 
-Installs the `zine` binary via `cargo install --path . --locked`. Requires `cargo` / `rustc 1.85+` and `git`. Built binary lands in `~/.cargo/bin/`.
+`install.sh` runs `cargo install --path . --locked`, so the `zine` binary lands in `~/.cargo/bin/`. Requires `cargo` / `rustc 1.85+` and `git`.
 
-## Why
-
-The quarterly zine's bottleneck is the moment-extractor step — without a CLI that walks session JSONLs and surfaces ~50 ranked candidate excerpts, the editor (the author) has to read every transcript by hand to find moments worth printing. Phase 0 ships only the extractor; layout/print/mail are explicitly downstream and human-driven.
-
-## Build
+## Quickstart
 
 ```sh
-cargo build --release
+# Top 50 moments from the last 90 days, as JSON
+zine extract
+
+# Read them in the terminal instead
+zine extract --since 30d --limit 20 --format text
 ```
 
-Produces `target/release/zine`. Symlink into `~/.local/bin/` if you want it on `$PATH`.
+The default root is `~/.claude/projects/-home-jsy/`; pass `--root <dir>` to point elsewhere. A non-existent root exits 2 with `no jsonl files found` and the path on stderr.
 
-## Usage
+The JSON output has the shape:
+
+```
+{ since, generated_at, root, total_turns_scanned, returned, moments: [ … ] }
+```
+
+Each moment carries `session_id`, `turn_index`, `ts`, `user_text`, `assistant_text`, `score`, and a one-sentence `why` explaining the rank.
+
+## How the ranking works
+
+A turn pair is one `user` record paired with the next `assistant` record; records that don't pair (isolated system reminders, tool-only calls) are skipped. By default, assistant turns with an empty text body — tool-only invocations — are dropped (`--include-tool-only` keeps them; `--exclude-tool-only` states the default explicitly for scripts).
+
+The interest score is a weighted sum of four signals:
+
+| Signal | Weight | Why it scores |
+|---|---|---|
+| Length bell curve, peaking ~600 chars total | 1.0 | Too short says little; too long is a wall. |
+| User-redirect keywords in the next turn (`wait`, `no actually`, `stop`, `hmm`) | 3.0 | A correction marks a surprising moment. |
+| Code blocks in the assistant text | 1.0 | Something was built, not just discussed. |
+| Novelty | 2.0 | Reward the unusual over the routine. |
+
+`--errors-only` narrows to pairs where the assistant's next turn apologises.
+
+## Cadence intake (opt-in)
+
+`--cadence-monthly` also pulls the quarter's monthly cadence records (produced by `letter-curate`) as additional moment seeds. It's off by default — the zine's quality is sensitive to mixing sources, so blending is a deliberate choice. `--cadence-record` writes the zine output back as a quarterly cadence record (on by default when `--cadence-monthly` is set); `--cadence-bundle-path` sets where the bundle Markdown is written or read. `--cadence-since` (default `92d`) is the look-back window for the monthly records.
+
+## Build and test
 
 ```sh
-zine --help
+cargo build --release   # produces target/release/zine
+cargo test
 ```
 
-## Audience
+Each MUST-level acceptance criterion has a matching integration test under `tests/acceptance_ac<n>.rs`.
 
-the author at quarter-end, running the extractor against the last 90 days of Claude Code session JSONLs (~/.claude/projects/-home-the author/*.jsonl), reading the ranked candidates in terminal, and using the JSON to seed manual selection. Audience for the JSON: the author reading it before manual curation, no downstream automation in Phase 0.
+## Status
 
-## Acceptance criteria
-
-This project was scaffolded from a PRD via the `autobuilder` pipeline. The MUST-level acceptance criteria are:
-
-- **AC1**: `zine extract --since <duration> [--root <jsonl-dir>] [--limit <N>] [--format json|text]` walks all *.jsonl files modified within the duration (e.g. 90d, 30d), extracts conversation turns, scores each turn pair (user + assistant) with th...
-- **AC2**: JSON output shape: top-level `{since, generated_at, root, total_turns_scanned, returned, moments: [...]}`. Each moment: `{session_id, turn_index, ts, user_text, assistant_text, score, why}`. `why` is a one-sentence string explaining the ...
-- **AC3**: Interest heuristic is a weighted sum: (a) length bell curve peaking ~600 chars total, (b) user-redirect keywords in turn N+1 (`wait`, `no actually`, `stop`, `hmm`) — indicates surprise, (c) code blocks in the assistant text (positive wei...
-- **AC4**: Default --root is `~/.claude/projects/-home-jsy/` (the Claude Code project transcripts directory). Non-existent root → exit 2 with stderr containing the path and `no jsonl files found`.
-- **AC5**: Turn pairs are extracted from the JSONL by walking records and pairing a `user` role record with the next `assistant` role record. Records that don't fit the pair (system reminders, tool calls in isolation) are skipped, not paired.
-- **AC6**: `--exclude-tool-only` (default true) drops assistant turns whose text content is empty (tool-only invocations). `--include-tool-only` includes them.
-
-Each AC has a matching integration test under `tests/acceptance_ac<n>.rs`.
-
-## Provenance
-
-Built via the [`autobuilder`](https://github.com/j0yen/autobuilder) pipeline (PRD intake -> intent-card -> scaffold -> iterate-and-prove). Originally consolidated as a subdir of the [`wintermute`](https://github.com/j0yen/wintermute) monorepo; this standalone repo is a fresh-init snapshot for easier consumption and distribution.
+Phase 0: the extractor only. Built via the [autobuilder](https://github.com/j0yen/autobuilder) pipeline (PRD → intent-card → scaffold → iterate-and-prove). Originally a subdirectory of the [wintermute](https://github.com/j0yen/wintermute) monorepo; this standalone repo is a fresh-init snapshot for easier distribution.
 
 ## License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Dual MIT / Apache-2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
